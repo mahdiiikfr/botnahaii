@@ -13,6 +13,8 @@ class ThrottlingMiddleware(BaseMiddleware):
     Uses a lightweight, in-memory dictionary cache (user_id -> last_timestamp).
     For CallbackQueries, alerts users via a pop-up without altering the UI.
     For Messages, ignores or silently rejects inputs that violate the rate limit.
+
+    CRITICAL localization requirement: All user-facing text is translated to Persian (Farsi).
     """
     def __init__(self, rate_limit: float = THROTTLING_RATE_LIMIT):
         super().__init__()
@@ -42,9 +44,9 @@ class ThrottlingMiddleware(BaseMiddleware):
                 # User is spamming
                 logger.warning(f"Throttled user {user_id}. Attempted request too quickly.")
                 if isinstance(event, CallbackQuery):
-                    # Answer the callback query with a visual Telegram alert
+                    # Answer the callback query with a visual Persian pop-up alert
                     await event.answer(
-                        text="Please slow down! 🐢",
+                        text="لطفاً کمی صبر کنید! 🐢",
                         show_alert=True
                     )
                 # Silently block further middleware/handler execution

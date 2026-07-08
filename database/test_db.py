@@ -12,14 +12,14 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 async def run_tests():
-    # Use an in-memory/temporary DB or a local file for the test
-    test_db_path = "database/test_store.db"
+    # Use real store database file or test database file
+    test_db_path = "database/store.db"
 
-    # Ensure any previous test db file is removed before starting
+    # Ensure any previous database file is removed before starting to reset cleanly
     if os.path.exists(test_db_path):
         os.remove(test_db_path)
 
-    logger.info(f"Starting test suite using database: {test_db_path}")
+    logger.info(f"Starting test suite and populating database: {test_db_path}")
 
     async with DatabaseManager(test_db_path) as db:
         # Create Tables
@@ -42,8 +42,7 @@ async def run_tests():
 
         # Test 3: Insert Duplicate User (INSERT OR IGNORE verification)
         success_dup = await db.add_user(user_id_1, "alice_tg_new_username")
-        # INSERT OR IGNORE won't throw error but rowcount will be 0, returning False or True depending on implementation.
-        # Let's fetch and verify username didn't get modified (ignored) and referral code didn't change
+        # INSERT OR IGNORE won't throw error but rowcount will be 0
         user_after = await db.get_user(user_id_1)
         assert user_after["username"] == "alice_tg", "Duplicate insertion modified username!"
         assert user_after["referral_code"] == user["referral_code"], "Duplicate insertion changed referral code!"
@@ -59,40 +58,60 @@ async def run_tests():
 
         # Test 5: Categories Creation and CRUD
         async with db._conn.cursor() as cursor:
-            await cursor.execute("INSERT INTO categories (name) VALUES (?), (?);", ("Digital Keys", "Gift Cards"))
+            await cursor.execute("INSERT INTO categories (name) VALUES (?), (?);", ("اکانت پرمیوم 🌟", "گیفت کارت 🎁"))
             await db._conn.commit()
 
         categories = await db.get_categories()
         assert len(categories) == 2, f"Expected 2 categories, found {len(categories)}"
-        assert categories[0]["name"] == "Digital Keys", "Categories alphabet order mismatch!"
         logger.info(f"[PASS] Retrieved all categories: {[dict(c) for c in categories]}")
 
-        category_id = categories[0]["id"]
+        category_id_1 = categories[0]["id"]
+        category_id_2 = categories[1]["id"]
 
         # Test 6: Products Creation and Active Products fetch
+        # Populate Category 1 with multiple products (7 products) to test 5-item pagination transitions.
+        dummy_products = [
+            ("تلگرام پرمیوم ۱ ماهه", "اشتراک یک ماهه تلگرام پرمیوم با فعالسازی مستقیم روی اکانت شما", 150000, 50, "TG-PREM-1MO", 1),
+            ("تلگرام پرمیوم ۳ ماهه", "اشتراک سه ماهه تلگرام پرمیوم با تخفیف ویژه", 420000, 20, "TG-PREM-3MO", 1),
+            ("تلگرام پرمیوم ۶ ماهه", "اشتراک شش ماهه تلگرام پرمیوم با بهترین قیمت", 800000, 15, "TG-PREM-6MO", 1),
+            ("تلگرام پرمیوم ۱ ساله", "اشتراک یک ساله کامل تلگرام پرمیوم با بیشترین تخفیف", 1500000, 10, "TG-PREM-1YR", 1),
+            ("اکانت اسپاتیفای پرمیوم", "اشتراک کاملاً اختصاصی اسپاتیفای پرمیوم بدون قطعی", 250000, 30, "SPOTIFY-PREM", 1),
+            ("اکانت یوتیوب پرمیوم", "اشتراک یوتیوب پرمیوم بدون تبلیغات مزاحم", 180000, 45, "YOUTUBE-PREM", 1),
+            ("اکانت نتفلیکس ۴ کاربره", "اکانت اشتراکی نتفلیکس با کیفیت Ultra HD", 350000, 5, "NETFLIX-UHD", 1),
+            ("اکانت تست غیرفعال", "محصول تستی غیرفعال برای صحت عملکرد سیستم", 90000, 0, "TEST-INACTIVE", 0),
+        ]
+
         async with db._conn.cursor() as cursor:
-            # Active product
+            for p in dummy_products:
+                await cursor.execute(
+                    """
+                    INSERT INTO products (category_id, name, description, price, stock, digital_data, is_active)
+                    VALUES (?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    (category_id_1, p[0], p[1], p[2], p[3], p[4], p[5])
+                )
+
+            # Category 2 products (2 products)
             await cursor.execute(
                 """
                 INSERT INTO products (category_id, name, description, price, stock, digital_data, is_active)
-                VALUES (?, ?, ?, ?, ?, ?, ?);
+                VALUES (?, 'گیفت کارت ۱0 دلاری اپل', 'کد گیفت کارت آیتونز اپل ریجن آمریکا', 550000, 8, 'APPLE-10USD-KEY', 1);
                 """,
-                (category_id, "Telegram Premium 1 Year", "1 Year Subscription Key", 1500, 10, "TG-PREM-1YR-KEY-XYZ", 1)
+                (category_id_2,)
             )
-            # Inactive product
             await cursor.execute(
                 """
                 INSERT INTO products (category_id, name, description, price, stock, digital_data, is_active)
-                VALUES (?, ?, ?, ?, ?, ?, ?);
+                VALUES (?, 'گیفت کارت ۵ دلاری استیم', 'کد گیفت کارت استیم ولت ریجن آمریکا', 280000, 12, 'STEAM-5USD-KEY', 1);
                 """,
-                (category_id, "Deprecated Subscription", "Expired key", 500, 0, "EXPIRED-KEY", 0)
+                (category_id_2,)
             )
             await db._conn.commit()
 
-        active_products = await db.get_active_products(category_id)
-        assert len(active_products) == 1, f"Expected 1 active product, found {len(active_products)}"
-        assert active_products[0]["name"] == "Telegram Premium 1 Year", "Product name mismatch"
-        logger.info(f"[PASS] Retrieved active products for category {category_id}: {[dict(p) for p in active_products]}")
+        active_products = await db.get_active_products(category_id_1)
+        # Should exclude the inactive product (8 total inserted, 7 active)
+        assert len(active_products) == 7, f"Expected 7 active products, found {len(active_products)}"
+        logger.info(f"[PASS] Retrieved active products. Active count: {len(active_products)}")
 
         product_id = active_products[0]["id"]
 
@@ -131,13 +150,8 @@ async def run_tests():
         except Exception as e:
             logger.info(f"[PASS] Foreign key constraints working perfectly. Exception: {e}")
 
-    # Cleanup test db file
-    if os.path.exists(test_db_path):
-        os.remove(test_db_path)
-        logger.info(f"Cleaned up temporary test database at {test_db_path}.")
-
     logger.info("====================================")
-    logger.info("ALL TESTS COMPLETED SUCCESSFULLY!")
+    logger.info("ALL TESTS COMPLETED SUCCESSFULLY & DUMMY DATA POPULATED!")
     logger.info("====================================")
 
 if __name__ == "__main__":

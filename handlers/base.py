@@ -1,11 +1,13 @@
 import logging
 from aiogram import Router, Bot, F
 from aiogram.types import Message, CallbackQuery
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from database.db import DatabaseManager
-from keyboards.base import get_main_menu_keyboard, get_join_channel_keyboard
+from keyboards.inline import get_home_keyboard
+from keyboards.base import get_join_channel_keyboard
 from config import REQUIRED_CHANNEL
+from utils.ui import format_breadcrumbs
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +19,7 @@ async def cmd_start(message: Message, state: FSMContext, db: DatabaseManager):
     Handles the /start command.
     - Resolves optional referral/invite parameter if present (e.g. /start 123456789).
     - Safely registers the user in the database.
-    - Sends the main menu of the single-page application.
+    - Sends the main menu of the single-page application localized in Farsi.
     """
     await state.clear()
 
@@ -39,17 +41,19 @@ async def cmd_start(message: Message, state: FSMContext, db: DatabaseManager):
     # Register user in DB
     await db.add_user(user_id=user_id, username=username, invited_by=invited_by)
 
+    breadcrumbs = format_breadcrumbs("home")
     welcome_text = (
-        f"<b>👋 Welcome to the Advanced Store Bot, {message.from_user.first_name}!</b>\n\n"
-        "This is an ultra-modern, Single-Page Application (SPA) styled bot. "
-        "Everything updates dynamically in a single message! No spam, no clutter.\n\n"
-        "Explore categories, purchase digital keys, deposit funds, and manage referrals below!"
+        f"{breadcrumbs}\n\n"
+        f"<b>👋 سلام {message.from_user.first_name}، به ربات فروشگاه پیشرفته خوش آمدید!</b>\n\n"
+        "این ربات با متدولوژی فوق‌مدرن تک‌صفحه‌ای (SPA) طراحی شده است. "
+        "تمامی منوها و جابجایی‌ها درون یک پیام واحد اتفاق می‌افتد تا صفحه چت شما همیشه تمیز بماند.\n\n"
+        "جهت شروع خرید، مشاهده محصولات، مدیریت کیف پول و مشاهده وضعیت سفارشات از گزینه‌های زیر استفاده کنید 👇"
     )
 
-    # Send the main menu keyboard
+    # Send the main menu keyboard in Farsi
     await message.answer(
         text=welcome_text,
-        reply_markup=get_main_menu_keyboard(),
+        reply_markup=get_home_keyboard(),
         parse_mode="HTML"
     )
 
@@ -57,8 +61,8 @@ async def cmd_start(message: Message, state: FSMContext, db: DatabaseManager):
 async def handle_check_joined(callback_query: CallbackQuery, db: DatabaseManager, bot: Bot):
     """
     Verifies if user completed joining the channel.
-    If joined: transfers them cleanly to the SPA Main Menu.
-    If not joined: displays a sharp error popup.
+    If joined: transfers them cleanly to the SPA Main Menu in Farsi.
+    If not joined: displays a sharp error popup in Farsi.
     """
     user_id = callback_query.from_user.id
 
@@ -77,28 +81,32 @@ async def handle_check_joined(callback_query: CallbackQuery, db: DatabaseManager
         # Register user (if they bypassed /start somehow)
         await db.add_user(user_id=user_id, username=callback_query.from_user.username)
 
+        breadcrumbs = format_breadcrumbs("home")
         main_menu_text = (
-            f"<b>🎉 Verification Successful!</b>\n\n"
-            "Welcome to the Advanced Store Bot! Explore the catalogs, order items, "
-            "and manage your referral network directly from the SPA interface below:"
+            f"{breadcrumbs}\n\n"
+            "<b>🎉 تبریک! عضویت شما با موفقیت تأیید شد.</b>\n\n"
+            "به فروشگاه مدرن ما خوش آمدید. اکنون می‌توانید از پنل زیر اقدام به خرید کرده یا حساب کاربری خود را مدیریت کنید:"
         )
 
         # Edit the message to show the Main Menu
         await callback_query.message.edit_text(
             text=main_menu_text,
-            reply_markup=get_main_menu_keyboard(),
+            reply_markup=get_home_keyboard(),
             parse_mode="HTML"
         )
-        await callback_query.answer("Success! Welcome aboard. 🚀")
+        await callback_query.answer("عضویت تأیید شد! خوش آمدید. 🚀")
     else:
-        # Show a sharp popup alert warning they haven't joined yet
+        # Show a sharp popup alert warning they haven't joined yet in Farsi
         await callback_query.answer(
-            text="🔒 Access denied! You have not joined our channel yet. Please join and try again.",
+            text="🔒 دسترسی محدود! شما هنوز عضو کانال ما نشده‌اید. لطفاً ابتدا عضو شوید و سپس مجدداً تلاش کنید.",
             show_alert=True
         )
 
 # SPA Global Catch-All Handler (at the bottom)
-@router.message()
+# Added StateFilter(None) filter to make sure that we only intercept and auto-delete
+# users' messages when they are NOT inside an active FSM state (state is None).
+# If they are in an active FSM state, aiogram propagates the event to targeted FSM handlers safely.
+@router.message(StateFilter(None))
 async def global_catch_all(message: Message, state: FSMContext):
     """
     Global catch-all message handler.
@@ -106,13 +114,7 @@ async def global_catch_all(message: Message, state: FSMContext):
     the handler immediately deletes the user's incoming message
     to keep the chat perfectly clean, adhering to strict SPA style.
     """
-    current_state = await state.get_state()
-    if current_state is None:
-        try:
-            await message.delete()
-        except Exception as e:
-            logger.error(f"Failed to delete spam message: {e}")
-    else:
-        # Since the bot is expecting FSM input, we do not delete it here.
-        # Downstream handlers will deal with processing and deleting it then.
-        pass
+    try:
+        await message.delete()
+    except Exception as e:
+        logger.error(f"Failed to delete spam message: {e}")

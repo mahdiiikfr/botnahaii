@@ -8,6 +8,7 @@ from middlewares.db import DbMiddleware
 from middlewares.throttling import ThrottlingMiddleware
 from middlewares.force_join import ForceJoinMiddleware
 from handlers.base import router as base_router
+from handlers.store import router as store_router
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -31,8 +32,6 @@ async def main():
     dp = Dispatcher()
 
     # Register Middlewares (Register on message and callback_query routers directly)
-    # DbMiddleware can remain on outer update to ensure DB is available everywhere, or on specific observers.
-    # To be extremely clean and robust, we register on both messages and callback_queries observers.
     dp.message.outer_middleware(DbMiddleware(db))
     dp.callback_query.outer_middleware(DbMiddleware(db))
 
@@ -44,6 +43,7 @@ async def main():
 
     # Register Routers
     dp.include_router(base_router)
+    dp.include_router(store_router)
 
     try:
         # Graceful startup logging

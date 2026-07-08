@@ -14,6 +14,8 @@ class ForceJoinMiddleware(BaseMiddleware):
     - Exempts checking action ('check_joined') callback queries.
     - For all other requests, checks user membership. If they are not a member,
       blocks the request and edits the current message or prompts them to join.
+
+    CRITICAL localization requirement: All user-facing text is translated to Persian (Farsi).
     """
     def __init__(self, channel_id: str = REQUIRED_CHANNEL):
         super().__init__()
@@ -51,19 +53,19 @@ class ForceJoinMiddleware(BaseMiddleware):
         # User is NOT a member. Intercept the request and display the Join Channel view
         logger.info(f"User {user_id} blocked. Not a member of {self.channel_id}.")
 
-        # Build the join keyboard
-        # Try to resolve format of REQUIRED_CHANNEL. It might be @ChannelName or -100xxxxx (Chat ID)
+        # Build the join keyboard in Persian
         channel_url = f"https://t.me/{self.channel_id.replace('@', '')}" if self.channel_id.startswith("@") else "https://t.me/telegram"
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📢 Join Channel", url=channel_url)],
-            [InlineKeyboardButton(text="✅ I Joined", callback_data="check_joined")]
+            [InlineKeyboardButton(text="📢 عضویت در کانال", url=channel_url)],
+            [InlineKeyboardButton(text="✅ عضو شدم", callback_data="check_joined")]
         ])
 
         text = (
-            "<b>🔒 Access Restricted!</b>\n\n"
-            f"You must join our official channel <b>{self.channel_id}</b> to use this bot!\n\n"
-            "Please join the channel and click the verification button below."
+            "<b>🔒 دسترسی محدود است!</b>\n\n"
+            f"برای استفاده از ربات، ابتدا باید عضو کانال رسمی ما شوید:\n"
+            f"👉 <b>{self.channel_id}</b>\n\n"
+            "لطفاً پس از عضویت، روی دکمه <b>«✅ عضو شدم»</b> در زیر کلیک کنید."
         )
 
         if isinstance(event, CallbackQuery):
