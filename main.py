@@ -1,41 +1,66 @@
 import asyncio
 import logging
 from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
 from config import BOT_TOKEN, DB_PATH
 from database.db import DatabaseManager
+from middlewares.db import DbMiddleware
+from middlewares.throttling import ThrottlingMiddleware
+from middlewares.force_join import ForceJoinMiddleware
+from handlers.base import router as base_router
 
-# Setup Logging
+# Configure Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 async def main():
-    logger.info("Initializing Telegram Bot...")
+    logger.info("Initializing Advanced Telegram Store Bot...")
 
-    # Initialize DB Manager
+    # Initialize Database Manager (aiosqlite)
     db = DatabaseManager(DB_PATH)
     await db.connect()
     await db.create_tables()
 
-    # Initialize Bot and Dispatcher
-    bot = Bot(token=BOT_TOKEN)
+    # Initialize Bot with default HTML parse mode using DefaultBotProperties
+    bot = Bot(
+        token=BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode="HTML")
+    )
+
+    # Initialize Dispatcher
     dp = Dispatcher()
 
-    # Placeholder for handlers registration in future phases
-    # from handlers import some_router
-    # dp.include_router(some_router)
+    # Register Middlewares (Register on message and callback_query routers directly)
+    # DbMiddleware can remain on outer update to ensure DB is available everywhere, or on specific observers.
+    # To be extremely clean and robust, we register on both messages and callback_queries observers.
+    dp.message.outer_middleware(DbMiddleware(db))
+    dp.callback_query.outer_middleware(DbMiddleware(db))
+
+    dp.message.outer_middleware(ThrottlingMiddleware())
+    dp.callback_query.outer_middleware(ThrottlingMiddleware())
+
+    dp.message.outer_middleware(ForceJoinMiddleware())
+    dp.callback_query.outer_middleware(ForceJoinMiddleware())
+
+    # Register Routers
+    dp.include_router(base_router)
 
     try:
-        # Start Polling
-        logger.info("Starting bot polling...")
-        # Since we are not running a live bot in Phase 1, we can comment out start_polling
-        # or have a fallback for local testing.
-        # await dp.start_polling(bot)
+        # Graceful startup logging
+        logger.info("Bot successfully loaded. Commencing polling...")
+        # Start polling (Uncommented as requested by code review to ensure production runs correctly)
+        await dp.start_polling(bot)
+    except Exception as e:
+        logger.critical(f"Critical error during polling execution: {e}")
     finally:
+        # Graceful cleanup of resources on stop/interruption
         await bot.session.close()
         await db.close()
-        logger.info("Bot stopped and resources cleaned up.")
+        logger.info("Bot and Database instances cleanly shut down.")
 
 if __name__ == "__main__":
-    # Standard entrypoint
-    # For Phase 1 we won't run polling, but code is ready for execution.
-    pass
+    # If file ran directly, run the main function asynchronously
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot execution terminated.")
