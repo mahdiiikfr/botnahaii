@@ -9,6 +9,8 @@ from middlewares.throttling import ThrottlingMiddleware
 from middlewares.force_join import ForceJoinMiddleware
 from handlers.base import router as base_router
 from handlers.store import router as store_router
+from handlers.payment import router as payment_router
+from handlers.admin import router as admin_router
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -44,11 +46,13 @@ async def main():
     # Register Routers
     dp.include_router(base_router)
     dp.include_router(store_router)
+    dp.include_router(payment_router)
+    dp.include_router(admin_router)
 
     try:
         # Graceful startup logging
         logger.info("Bot successfully loaded. Commencing polling...")
-        # Start polling (Uncommented as requested by code review to ensure production runs correctly)
+        # Start polling (Uncommented to ensure production runs correctly)
         await dp.start_polling(bot)
     except Exception as e:
         logger.critical(f"Critical error during polling execution: {e}")

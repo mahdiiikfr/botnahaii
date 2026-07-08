@@ -159,22 +159,3 @@ async def handle_product_details(
         reply_markup=get_product_detail_keyboard(product, cat_id, page)
     )
     await callback_query.answer()
-
-@router.callback_query(F.data.startswith("add_cart:"))
-async def handle_add_to_cart(callback_query: CallbackQuery, db: DatabaseManager):
-    """
-    Triggers when user clicks 'Add to Cart'.
-    Provides instant Persian feedback via show_alert=False popup.
-    """
-    product_id_str = callback_query.data.split(":")[1]
-
-    try:
-        product_id = int(product_id_str)
-    except ValueError:
-        await callback_query.answer("⚠️ شناسه محصول نامعتبر است!", show_alert=True)
-        return
-
-    # In Phase 3, we just simulate adding to cart with a success alert popup
-    # Later phases will handle real basket storage.
-    alert_text = "🛒 محصول با موفقیت به سبد خرید شما اضافه شد! در مراحل بعدی می‌توانید خرید خود را نهایی کنید."
-    await callback_query.answer(text=alert_text, show_alert=False)
