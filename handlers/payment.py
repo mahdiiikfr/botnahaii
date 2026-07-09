@@ -9,7 +9,8 @@ from keyboards.inline import CategoryCallback, MenuCallback
 from utils.ui import edit_message_safely, format_breadcrumbs, format_currency
 from utils.admin_logs import send_order_log_to_admin
 from utils.referrals import apply_referral_rewards
-from config import CARD_NUMBER, CARD_HOLDER
+from config import CARD_NUMBER, CARD_HOLDER, WEB_URL
+from utils.zarinpal import create_zarinpal_payment
 
 logger = logging.getLogger(__name__)
 
@@ -58,28 +59,6 @@ def get_checkout_keyboard(product_id: int, cat_id: int, page: int) -> InlineKeyb
 
     return builder.as_markup()
 
-def get_online_simulation_keyboard(product_id: int, cat_id: int, page: int) -> InlineKeyboardMarkup:
-    """
-    Returns the online payment simulation keyboard.
-    """
-    builder = InlineKeyboardBuilder()
-
-    simulate_success = InlineKeyboardButton(
-        text="🔗 شبیه‌ساز پرداخت موفق",
-        callback_data=f"sim_success:{product_id}",
-        style="success"
-    )
-
-    back_button = InlineKeyboardButton(
-        text="🔙 انصراف",
-        callback_data=CategoryCallback(id=cat_id, page=page).pack(),
-        style="danger"
-    )
-
-    builder.row(simulate_success)
-    builder.row(back_button)
-
-    return builder.as_markup()
 
 # --- Handlers ---
 
@@ -201,46 +180,21 @@ async def handle_wallet_checkout_pay(callback_query: CallbackQuery, db: Database
         method_text="پرداخت از کیف پول"
     )
 
-# --- Automated Online simulation ---
 @router.callback_query(F.data.startswith("pay_online:"))
-async def handle_online_payment(callback_query: CallbackQuery):
+async def handle_online_payment(callback_query: CallbackQuery, db: DatabaseManager, bot: Bot):
     """
-    Displays the automated gateway simulation view.
+    Initiates a real payment request with Zarinpal API.
+    - Creates a pending order in the database with status='pending' and recorded price.
+    - Formulates Zarinpal callback url with order_id.
+    - Displays redirect button directly to the customer in Farsi.
     """
     parts = callback_query.data.split(":")
     prod_id, cat_id, page = int(parts[1]), int(parts[2]), int(parts[3])
-
-    breadcrumbs = format_breadcrumbs("detail")
-    text = (
-        f"{breadcrumbs}\n\n"
-        "<b>🔗 در حال اتصال به درگاه پرداخت...</b>\n\n"
-        "این صفحه شبیه‌ساز پرداخت آنلاین است. جهت نهایی کردن خرید روی دکمه شبیه‌ساز پرداخت در زیر کلیک کنید:"
-    )
-
-    await edit_message_safely(
-        event=callback_query,
-        text=text,
-        reply_markup=get_online_simulation_keyboard(prod_id, cat_id, page)
-    )
-    await callback_query.answer()
-
-@router.callback_query(F.data.startswith("sim_success:"))
-async def handle_simulated_success(callback_query: CallbackQuery, db: DatabaseManager, bot: Bot):
-    """
-    Processes a successful gateway payment simulation.
-    Updates database order immediately to paid -> delivered.
-    Automatically sends delivery message containing product digital_data.
-    """
-    product_id = int(callback_query.data.split(":")[1])
     user_id = callback_query.from_user.id
-    username = callback_query.from_user.username
 
-    # Fetch user data to check inviter
-    user_row = await db.get_user(user_id)
-
-    # Fetch product details
+    # 1. Fetch product details
     async with db._conn.execute(
-        "SELECT id, name, price, digital_data FROM products WHERE id = ?;", (product_id,)
+        "SELECT id, name, price, description FROM products WHERE id = ?;", (prod_id,)
     ) as cursor:
         product = await cursor.fetchone()
 
@@ -248,42 +202,67 @@ async def handle_simulated_success(callback_query: CallbackQuery, db: DatabaseMa
         await callback_query.answer("⚠️ محصول یافت نشد!", show_alert=True)
         return
 
-    # 1. Create order in paid status (pending delivery)
-    order_id = await db.create_order(user_id=user_id, product_id=product_id, status="paid", amount=product["price"])
+    price = product["price"]
 
-    # 2. Notify user in SPA screen
-    breadcrumbs = format_breadcrumbs("home")
-    pending_text = (
-        f"{breadcrumbs}\n\n"
-        f"<b>⏳ پرداخت با موفقیت تایید شد!</b>\n\n"
-        f"📦 <b>شناسه سفارش:</b> #{order_id}\n"
-        f"🛍️ <b>محصول خریداری شده:</b> {product['name']}\n"
-        f"💰 <b>مبلغ تراکنش:</b> {format_currency(product['price'])}\n\n"
-        "سفارش شما با موفقیت پرداخت گردید و در انتظار تحویل توسط مدیریت است. به محض ارسال مشخصات، برای شما فرستاده خواهد شد."
-    )
-
-    back_home_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏠 بازگشت به صفحه اصلی", callback_data=MenuCallback(action="home").pack())]
-    ])
-
-    await edit_message_safely(
-        event=callback_query,
-        text=pending_text,
-        reply_markup=back_home_keyboard
-    )
-    await callback_query.answer("✅ پرداخت آنلاین شبیه‌سازی شد! در انتظار تایید مدیریت.")
-
-    # 3. Send Log Report to admin with decision buttons
-    price_text = format_currency(product["price"])
-    await send_order_log_to_admin(
-        bot=bot,
-        order_id=order_id,
+    # 2. Create pending order in DB
+    order_id = await db.create_order(
         user_id=user_id,
-        username=username,
-        product_name=product["name"],
-        price_text=price_text,
-        method_text="درگاه پرداخت آنلاین (شبیه‌سازی‌شده)"
+        product_id=prod_id,
+        status="pending",
+        amount=price
     )
+
+    # 3. Formulate description and callback url
+    description = f"خرید {product['name']} - سفارش #{order_id}"
+    callback_url = f"{WEB_URL}/zarinpal/callback?order_id={order_id}"
+
+    # 4. Initiate Zarinpal Request
+    await callback_query.answer("🔄 در حال اتصال به درگاه بانک...")
+    payment_url = await create_zarinpal_payment(
+        amount_toman=price,
+        description=description,
+        callback_url=callback_url
+    )
+
+    breadcrumbs = format_breadcrumbs("detail")
+
+    if payment_url:
+        text = (
+            f"{breadcrumbs}\n\n"
+            f"<b>💳 پرداخت آنلاین از طریق درگاه امن زرین‌پال</b>\n\n"
+            f"📦 <b>نام محصول:</b> {product['name']}\n"
+            f"💰 <b>مبلغ نهایی تراکنش:</b> {format_currency(price)}\n\n"
+            "لطفاً جهت تکمیل تراکنش روی دکمه زیر کلیک کنید تا وارد درگاه پرداخت شوید 👇"
+        )
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔗 ورود به درگاه پرداخت زرین‌پال", url=payment_url)],
+            [InlineKeyboardButton(text="🔙 انصراف و لغو خرید", callback_data=CategoryCallback(id=cat_id, page=page).pack(), style="danger")]
+        ])
+
+        await edit_message_safely(
+            event=callback_query,
+            text=text,
+            reply_markup=keyboard
+        )
+    else:
+        # Show elegant fallback warning screen
+        text = (
+            f"{breadcrumbs}\n\n"
+            f"<b>⚠️ خطا در اتصال به درگاه پرداخت!</b>\n\n"
+            "متأسفانه در حال حاضر امکان اتصال به درگاه پرداخت آنلاین زرین‌پال وجود ندارد.\n"
+            "خواهشمند است از سایر روش‌های پرداخت (مانند کارت به کارت یا خرید از موجودی کیف پول) استفاده فرمایید یا با پشتیبانی در ارتباط باشید."
+        )
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 بازگشت به جزئیات محصول", callback_data=CategoryCallback(id=cat_id, page=page).pack(), style="danger")]
+        ])
+
+        await edit_message_safely(
+            event=callback_query,
+            text=text,
+            reply_markup=keyboard
+        )
 
 # --- Card-to-Card payment pathway ---
 @router.callback_query(F.data.startswith("pay_card:"))
@@ -417,54 +396,71 @@ async def handle_receipt_photo(message: Message, state: FSMContext, db: Database
 @router.callback_query(F.data.startswith("dep_online:"))
 async def handle_deposit_online_pay(callback_query: CallbackQuery, db: DatabaseManager, bot: Bot):
     """
-    Online gateway simulation for wallet deposits.
-    Immediately increments wallet balance and notifies user inside SPA screen.
+    Initiates a real wallet deposit payment with Zarinpal API.
+    - Creates a pending order in the database with status='pending' and nullable product_id.
+    - Formulates Zarinpal callback url with order_id.
+    - Displays redirect button directly to the customer in Farsi.
     """
     amount = int(callback_query.data.split(":")[1])
     user_id = callback_query.from_user.id
-    username = callback_query.from_user.username
 
-    # 1. Register order as delivered (product_id = None represents a wallet deposit order)
-    order_id = await db.create_order(user_id=user_id, product_id=None, status="paid", amount=amount)
-    async with db._conn.cursor() as cursor:
-        await cursor.execute("UPDATE orders SET status = 'delivered' WHERE id = ?;", (order_id,))
-        await db._conn.commit()
-
-    # 2. Increment wallet balance
-    await db.update_user_balance(user_id, amount)
-
-    # 3. Notify user inside SPA message
-    breadcrumbs = format_breadcrumbs("home")
-    success_text = (
-        f"{breadcrumbs}\n\n"
-        f"<b>🎉 افزایش اعتبار با موفقیت انجام شد!</b>\n\n"
-        f"📦 <b>شناسه سفارش شارژ:</b> #{order_id}\n"
-        f"💰 <b>مبلغ افزوده شده:</b> {format_currency(amount)}\n\n"
-        "موجودی کیف پول شما بلافاصله به‌روزرسانی گردید. هم‌اکنون می‌توانید از محل موجودی اقدام به خرید محصول فرمایید."
-    )
-
-    back_home_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏠 بازگشت به صفحه اصلی", callback_data=MenuCallback(action="home").pack())]
-    ])
-
-    await edit_message_safely(
-        event=callback_query,
-        text=success_text,
-        reply_markup=back_home_keyboard
-    )
-    await callback_query.answer("✅ افزایش اعتبار موفقیت‌آمیز بود!")
-
-    # 4. Dispatch Audit log to admin
-    price_text = format_currency(amount)
-    await send_order_log_to_admin(
-        bot=bot,
-        order_id=order_id,
+    # 1. Create pending deposit order in DB
+    order_id = await db.create_order(
         user_id=user_id,
-        username=username,
-        product_name="افزایش اعتبار کیف پول (آنلاین)",
-        price_text=price_text,
-        method_text="درگاه پرداخت آنلاین (شبیه‌سازی‌شده)"
+        product_id=None,
+        status="pending",
+        amount=amount
     )
+
+    # 2. Formulate description and callback url
+    description = f"شارژ کیف پول - سفارش #{order_id}"
+    callback_url = f"{WEB_URL}/zarinpal/callback?order_id={order_id}"
+
+    # 3. Initiate Zarinpal Request
+    await callback_query.answer("🔄 در حال اتصال به درگاه بانک...")
+    payment_url = await create_zarinpal_payment(
+        amount_toman=amount,
+        description=description,
+        callback_url=callback_url
+    )
+
+    breadcrumbs = format_breadcrumbs("home")
+
+    if payment_url:
+        text = (
+            f"{breadcrumbs}\n\n"
+            f"<b>💳 افزایش اعتبار کیف پول از طریق درگاه امن زرین‌پال</b>\n\n"
+            f"💰 <b>مبلغ شارژ درخواستی:</b> {format_currency(amount)}\n\n"
+            "لطفاً جهت اتصال به درگاه رسمی و امن بانکی زرین‌پال روی دکمه زیر کلیک کنید 👇"
+        )
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔗 ورود به درگاه پرداخت زرین‌پال", url=payment_url)],
+            [InlineKeyboardButton(text="❌ انصراف و لغو فاکتور", callback_data=MenuCallback(action="wallet").pack(), style="danger")]
+        ])
+
+        await edit_message_safely(
+            event=callback_query,
+            text=text,
+            reply_markup=keyboard
+        )
+    else:
+        text = (
+            f"{breadcrumbs}\n\n"
+            f"<b>⚠️ خطا در اتصال به درگاه پرداخت!</b>\n\n"
+            "متأسفانه در حال حاضر امکان اتصال به درگاه پرداخت آنلاین زرین‌پال وجود ندارد.\n"
+            "خواهشمند است از سایر روش‌های پرداخت (مانند کارت به کارت) استفاده فرمایید یا با پشتیبانی در ارتباط باشید."
+        )
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 بازگشت به کیف پول", callback_data=MenuCallback(action="wallet").pack(), style="danger")]
+        ])
+
+        await edit_message_safely(
+            event=callback_query,
+            text=text,
+            reply_markup=keyboard
+        )
 
 @router.callback_query(F.data.startswith("dep_card:"))
 async def handle_deposit_card_pay(callback_query: CallbackQuery, state: FSMContext):
