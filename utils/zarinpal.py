@@ -20,11 +20,13 @@ if IS_SANDBOX:
 async def create_zarinpal_payment(amount_toman: int, description: str, callback_url: str) -> str | None:
     """
     Sends a Payment Request to Zarinpal.
+    Converts Tomans to Rials by multiplying by 10 as requested.
     Returns the redirect payment URL if successful, or None if failed.
     """
+    amount_rial = amount_toman * 10
     payload = {
         "merchant_id": ZARINPAL_MERCHANT,
-        "amount": amount_toman,
+        "amount": amount_rial,
         "description": description,
         "callback_url": callback_url,
         "metadata": {
@@ -63,11 +65,13 @@ async def create_zarinpal_payment(amount_toman: int, description: str, callback_
 async def verify_zarinpal_payment(amount_toman: int, authority: str) -> int | None:
     """
     Verifies a payment from Zarinpal using authority and original amount.
+    Converts Tomans to Rials by multiplying by 10 as requested.
     Returns ref_id (int) if successful/verified, or None if failed.
     """
+    amount_rial = amount_toman * 10
     payload = {
         "merchant_id": ZARINPAL_MERCHANT,
-        "amount": amount_toman,
+        "amount": amount_rial,
         "authority": authority
     }
 

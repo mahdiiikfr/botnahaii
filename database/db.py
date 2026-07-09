@@ -3,6 +3,7 @@ import secrets
 import string
 import logging
 import aiosqlite
+from config import REQUIRED_CHANNEL
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,13 @@ class DatabaseManager:
             raise RuntimeError("Database is not connected. Call connect() or use context manager.")
 
         queries = [
+            # Settings Table
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
+            """,
             # Categories Table
             """
             CREATE TABLE IF NOT EXISTS categories (
@@ -155,6 +163,11 @@ class DatabaseManager:
         ]
 
         async with self._conn.cursor() as cursor:
+            # Seed default required channel setting
+            await cursor.execute(
+                "INSERT OR IGNORE INTO settings (key, value) VALUES ('required_channel', ?);",
+                (REQUIRED_CHANNEL,)
+            )
             for cat in categories:
                 await cursor.execute("INSERT OR IGNORE INTO categories (name) VALUES (?);", (cat,))
             await self._conn.commit()
@@ -362,6 +375,29 @@ class DatabaseManager:
         ) as cursor:
             row = await cursor.fetchone()
             return row["count"] if row else 0
+
+    async def get_setting(self, key: str, default: str = None) -> str:
+        """
+        Retrieves a persistent setting value by its key.
+        """
+        if self._conn is None:
+            return default
+        async with self._conn.execute("SELECT value FROM settings WHERE key = ?;", (key,)) as cursor:
+            row = await cursor.fetchone()
+            return row["value"] if row else default
+
+    async def set_setting(self, key: str, value: str):
+        """
+        Saves or updates a persistent setting.
+        """
+        if self._conn is None:
+            return
+        async with self._conn.cursor() as cursor:
+            await cursor.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?);",
+                (key, value)
+            )
+            await self._conn.commit()
 
     async def get_user_orders_paginated(self, user_id: int, limit: int = 1, offset: int = 0) -> list[aiosqlite.Row]:
         """

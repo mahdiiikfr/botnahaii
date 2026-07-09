@@ -41,7 +41,24 @@ async def cmd_start(message: Message, state: FSMContext, db: DatabaseManager):
                 invited_by = potential_inviter
 
     # Register user in DB (only inserts if user doesn't exist, preventing invite overwriting)
-    await db.add_user(user_id=user_id, username=username, invited_by=invited_by)
+    is_new_user = await db.add_user(user_id=user_id, username=username, invited_by=invited_by)
+
+    if is_new_user and invited_by:
+        # Notify the inviter in Farsi
+        new_ref_name = f"@{username}" if username else f"کاربر جدید (ID: {user_id})"
+        ref_notify_text = (
+            "<b>🎉 عضویت زیرمجموعه جدید با لینک دعوت شما!</b>\n\n"
+            f"👤 کاربر <b>{new_ref_name}</b> با موفقیت از طریق لینک اختصاصی شما عضو ربات شد.\n"
+            "به محض اینکه اولین خرید خود را انجام دهد، پورسانت نقدی دریافت خواهید کرد! 😍💰"
+        )
+        try:
+            await message.bot.send_message(
+                chat_id=invited_by,
+                text=ref_notify_text,
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.error(f"Failed to notify inviter {invited_by}: {e}")
 
     breadcrumbs = format_breadcrumbs("home")
     welcome_text = (

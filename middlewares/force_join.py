@@ -27,6 +27,13 @@ class ForceJoinMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: Dict[str, Any]
     ) -> Any:
+        db = data.get("db")
+        if db:
+            self.channel_id = await db.get_setting("required_channel", REQUIRED_CHANNEL)
+
+        if not self.channel_id or self.channel_id.lower() in ("none", "no", "disable", "disabled", "", "off"):
+            return await handler(event, data)
+
         # Resolve the user and bot from the event context
         user_id = None
         bot = data.get("bot")

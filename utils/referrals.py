@@ -16,7 +16,7 @@ async def apply_referral_rewards(db: DatabaseManager, bot: Bot, user_row: dict, 
     if not invited_by:
         return
 
-    commission = int(product["price"] * 0.10)
+    commission = 10000 # Flat 10,000 Toman referral commission per purchase
     if commission <= 0:
         return
 
@@ -32,7 +32,7 @@ async def apply_referral_rewards(db: DatabaseManager, bot: Bot, user_row: dict, 
     notification_text = (
         "<b>🎉 تبریک پورسانت جدید!</b>\n\n"
         f"یکی از زیرمجموعه‌های شما ({customer_name}) خرید موفقی به مبلغ {format_currency(product['price'])} انجام داد. 😍\n\n"
-        f"💰 مبلغ <b>{formatted_commission}</b> (۱۰٪ پورسانت) به صورت خودکار به کیف پول شما افزوده شد!"
+        f"💰 مبلغ <b>{formatted_commission}</b> (پورسانت ثابت خرید زیرمجموعه) به صورت خودکار به کیف پول شما افزوده شد!"
     )
 
     try:
