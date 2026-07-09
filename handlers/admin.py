@@ -1,9 +1,11 @@
 import logging
 from aiogram import Router, Bot, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.exceptions import TelegramForbiddenError, TelegramAPIError
 from database.db import DatabaseManager
 from keyboards.inline import MenuCallback
 from utils.ui import format_breadcrumbs, format_currency
+from utils.referrals import apply_referral_rewards
 
 logger = logging.getLogger(__name__)
 
@@ -79,8 +81,10 @@ async def handle_admin_approval(callback_query: CallbackQuery, db: DatabaseManag
                 parse_mode="HTML"
             )
             logger.info(f"Delivered successful recharge notify to user {order['user_id']}.")
-        except Exception as e:
-            logger.error(f"Failed to notify customer {order['user_id']} of recharge approval: {e}")
+        except TelegramForbiddenError:
+            logger.warning(f"Could not notify customer {order['user_id']} of deposit approval: User blocked the bot.")
+        except TelegramAPIError as e:
+            logger.error(f"Failed to notify customer {order['user_id']} of deposit approval: {e}")
 
     else:
         # --- B. STANDARD PRODUCT PURCHASE ---
@@ -127,13 +131,15 @@ async def handle_admin_approval(callback_query: CallbackQuery, db: DatabaseManag
                 parse_mode="HTML"
             )
             logger.info(f"Delivered order keys #{order_id} directly to client {order['user_id']}.")
-        except Exception as e:
-            logger.error(f"Failed to deliver key to customer {order['user_id']}: {e}")
+        except TelegramForbiddenError:
+            logger.warning(f"Could not deliver keys for order #{order_id}: User blocked the bot.")
+        except TelegramAPIError as e:
+            logger.error(f"Failed to deliver keys for order #{order_id} due to api error: {e}")
 
         # 4. Trigger 10% Referral commission logic if applicable
         user_row = await db.get_user(order["user_id"])
         if user_row:
-            await _apply_referral_rewards(db, bot, user_row, product)
+            await apply_referral_rewards(db, bot, user_row, product)
 
 
 @router.callback_query(F.data.startswith("admin_reject:"))
@@ -192,8 +198,10 @@ async def handle_admin_rejection(callback_query: CallbackQuery, db: DatabaseMana
             parse_mode="HTML"
         )
         logger.info(f"Dispatched rejection notification for order #{order_id} to user {order['user_id']}.")
-    except Exception as e:
-        logger.error(f"Failed to notify customer {order['user_id']} of rejection: {e}")
+    except TelegramForbiddenError:
+        logger.warning(f"Failed to deliver rejection notify for order #{order_id}: User blocked the bot.")
+    except TelegramAPIError as e:
+        logger.error(f"Failed to deliver rejection notify for order #{order_id} due to api error: {e}")
 
 
 async def _clean_admin_ui(callback_query: CallbackQuery, order_id: int, is_approved: bool):
@@ -221,42 +229,3 @@ async def _clean_admin_ui(callback_query: CallbackQuery, order_id: int, is_appro
             )
     except Exception as e:
         logger.error(f"Failed to clean admin interface for order #{order_id}: {e}")
-
-
-async def _apply_referral_rewards(db: DatabaseManager, bot: Bot, user_row: dict, product: dict):
-    """
-    Referral Cashback Reward logic:
-    Finds inviter, credits 10% of standard product purchases to inviter's wallet,
-    and dispatches a direct Farsi notification with RTL emojis.
-    """
-    invited_by = user_row["invited_by"]
-    if not invited_by:
-        return
-
-    commission = int(product["price"] * 0.10)
-    if commission <= 0:
-        return
-
-    # Credit inviter's wallet balance
-    success = await db.update_user_balance(invited_by, commission)
-    if not success:
-        return
-
-    formatted_commission = format_currency(commission)
-    customer_name = f"@{user_row['username']}" if user_row['username'] else "یکی از زیرمجموعه‌های شما"
-
-    notification_text = (
-        "<b>🎉 تبریک پورسانت جدید!</b>\n\n"
-        f"یکی از زیرمجموعه‌های شما ({customer_name}) خرید موفقی به مبلغ {format_currency(product['price'])} انجام داد. 😍\n\n"
-        f"💰 مبلغ <b>{formatted_commission}</b> (۱۰٪ پورسانت) به صورت خودکار به کیف پول شما افزوده شد!"
-    )
-
-    try:
-        await bot.send_message(
-            chat_id=invited_by,
-            text=notification_text,
-            parse_mode="HTML"
-        )
-        logger.info(f"Successfully credited {commission} referral reward to inviter {invited_by}.")
-    except Exception as e:
-        logger.error(f"Failed to deliver referral commission direct message to {invited_by}: {e}")

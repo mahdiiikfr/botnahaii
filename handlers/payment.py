@@ -8,6 +8,7 @@ from database.db import DatabaseManager
 from keyboards.inline import CategoryCallback, MenuCallback
 from utils.ui import edit_message_safely, format_breadcrumbs, format_currency
 from utils.admin_logs import send_order_log_to_admin
+from utils.referrals import apply_referral_rewards
 from config import CARD_NUMBER, CARD_HOLDER
 
 logger = logging.getLogger(__name__)
@@ -194,7 +195,7 @@ async def handle_wallet_checkout_pay(callback_query: CallbackQuery, db: Database
     await callback_query.answer("✅ خرید موفقیت‌آمیز بود!")
 
     # 6. Referral Commission (10% cash-back to inviter)
-    await _apply_referral_rewards(db, bot, user_row, product_row)
+    await apply_referral_rewards(db, bot, user_row, product_row)
 
     # 7. Send Log Report to admin (for audit trail)
     price_text = format_currency(price)
@@ -288,7 +289,7 @@ async def handle_simulated_success(callback_query: CallbackQuery, db: DatabaseMa
 
     # 4. Process Referral Reward
     if user_row:
-        await _apply_referral_rewards(db, bot, user_row, product)
+        await apply_referral_rewards(db, bot, user_row, product)
 
     # 5. Dispatch a report log to Admin
     price_text = format_currency(product["price"])
@@ -397,7 +398,7 @@ async def handle_receipt_photo(message: Message, state: FSMContext, db: Database
         f"<b>⏳ رسید شما با موفقیت ثبت شد!</b>\n\n"
         f"📦 <b>شناسه سفارش:</b> #{order_id}\n"
         f"🛍️ <b>محصول درخواستی:</b> {product['name']}\n\n"
-        "واریزی شما ثبت شده و در حال بررسی توسط مدیریت می‌باشد. به محض بررسی، نتیجه از طریق همین پیام به اطلاع شما خواهد رسید.\n\n"
+        "⚠️ رسید پرداخت شما ثبت شده و در حال بررسی توسط مدیریت است.\n\n"
         "جهت بازگشت به منوی اصلی روی دکمه زیر کلیک کنید:"
     )
 
@@ -590,44 +591,3 @@ async def handle_deposit_receipt_photo(message: Message, state: FSMContext, db: 
         method_text="کارت به کارت (کارت به کارت)",
         receipt_file_id=receipt_file_id
     )
-
-# --- Referral Helper Rewards logic ---
-async def _apply_referral_rewards(db: DatabaseManager, bot: Bot, user_row: dict, product: dict):
-    """
-    Rewards system logic helper:
-    If customer has an invited_by ID, calculates 10% of purchase price,
-    adds it directly to the inviter's wallet_balance, and notifies them in Persian.
-    """
-    invited_by = user_row["invited_by"]
-    if not invited_by:
-        return
-
-    # Calculate 10% cash-back commission
-    commission = int(product["price"] * 0.10)
-    if commission <= 0:
-        return
-
-    # 1. Update inviter balance in SQLite DB
-    success = await db.update_user_balance(invited_by, commission)
-    if not success:
-        return
-
-    # 2. Build beautiful Persian notification
-    formatted_commission = format_currency(commission)
-    customer_name = f"@{user_row['username']}" if user_row['username'] else "یکی از زیرمجموعه‌های شما"
-
-    notification_text = (
-        "<b>🎉 تبریک پورسانت جدید!</b>\n\n"
-        f"یکی از زیرمجموعه‌های شما ({customer_name}) خرید موفقی به مبلغ {format_currency(product['price'])} انجام داد. 😍\n\n"
-        f"💰 مبلغ <b>{formatted_commission}</b> (۱۰٪ پورسانت) به صورت خودکار به کیف پول شما افزوده شد!"
-    )
-
-    try:
-        await bot.send_message(
-            chat_id=invited_by,
-            text=notification_text,
-            parse_mode="HTML"
-        )
-        logger.info(f"Successfully credited {commission} referral reward to inviter {invited_by}.")
-    except Exception as e:
-        logger.error(f"Failed to deliver referral commission direct message to {invited_by}: {e}")
