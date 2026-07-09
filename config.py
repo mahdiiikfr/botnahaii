@@ -33,5 +33,5 @@ BACKUP_CHANNEL_ID = os.getenv("BACKUP_CHANNEL_ID", "-100123456789")
 
 # Zarinpal Gateway Configuration
 ZARINPAL_MERCHANT = os.getenv("ZARINPAL_MERCHANT", "22084777-e799-400c-b57d-8a28aa22fadf")
-WEB_URL = os.getenv("WEB_URL", "https://yourdomain.com")
+WEB_URL = os.getenv("WEB_URL", "https://pay2.parslicense.ir")
 WEB_PORT = int(os.getenv("WEB_PORT", "8080"))
