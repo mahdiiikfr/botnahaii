@@ -243,14 +243,14 @@ async def main():
     dp.message.outer_middleware(ForceJoinMiddleware())
     dp.callback_query.outer_middleware(ForceJoinMiddleware())
 
-    # Register Routers (Include wallet and referral routers cleanly)
-    dp.include_router(base_router)
-    dp.include_router(store_router)
-    dp.include_router(payment_router)
+    # Register Routers (Order is critical: specific routers must come before base_router containing the catch-all)
     dp.include_router(admin_router)
+    dp.include_router(support_router)
+    dp.include_router(payment_router)
     dp.include_router(wallet_router)
     dp.include_router(referral_router)
-    dp.include_router(support_router)
+    dp.include_router(store_router)
+    dp.include_router(base_router)
 
     # Initialize Zarinpal Callback HTTP Server
     app = web.Application()
