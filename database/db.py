@@ -126,6 +126,14 @@ class DatabaseManager:
             await self._conn.commit()
 
         logger.info("Database tables initialized successfully (Phase 5 schema updated).")
+
+        # Backward compatibility: add delivery_data column if it doesn't exist
+        try:
+            await self._conn.execute("ALTER TABLE orders ADD COLUMN delivery_data TEXT;")
+            await self._conn.commit()
+        except Exception:
+            pass
+
         await self.seed_database()
 
     async def seed_database(self):
@@ -364,7 +372,7 @@ class DatabaseManager:
 
         async with self._conn.execute(
             """
-            SELECT o.id, o.product_id, o.amount, o.status, o.payment_receipt, o.date, p.name as product_name, p.digital_data
+            SELECT o.id, o.product_id, o.amount, o.status, o.payment_receipt, o.date, o.delivery_data, p.name as product_name, p.digital_data
             FROM orders o
             LEFT JOIN products p ON o.product_id = p.id
             WHERE o.user_id = ?
@@ -374,6 +382,21 @@ class DatabaseManager:
             (user_id, limit, offset)
         ) as cursor:
             return await cursor.fetchall()
+
+    async def update_order_delivery_data(self, order_id: int, delivery_data: str) -> bool:
+        """
+        Saves custom delivery details for an order.
+        """
+        if self._conn is None:
+            raise RuntimeError("Database is not connected.")
+
+        async with self._conn.cursor() as cursor:
+            await cursor.execute(
+                "UPDATE orders SET delivery_data = ? WHERE id = ?;",
+                (delivery_data, order_id)
+            )
+            await self._conn.commit()
+            return cursor.rowcount > 0
 
     async def get_total_user_orders_all_count(self, user_id: int) -> int:
         """

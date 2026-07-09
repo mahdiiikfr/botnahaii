@@ -230,7 +230,7 @@ async def handle_my_orders_page(callback_query: CallbackQuery, page: int, db: Da
     # Format license / delivery info if any
     delivery_info = ""
     if order["status"] == "delivered" and order["product_id"] is not None:
-        license_key = order["digital_data"] or "تحویل دستی (توسط مدیریت ارسال شده است)"
+        license_key = order["delivery_data"] or order["digital_data"] or "تحویل دستی (توسط مدیریت ارسال شده است)"
         delivery_info = (
             f"\n\n🗝️ <b>لایسنس / اطلاعات دیجیتال تحویل داده شده:</b>\n"
             f"<code>{license_key}</code>"

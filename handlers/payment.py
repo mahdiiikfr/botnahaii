@@ -164,23 +164,18 @@ async def handle_wallet_checkout_pay(callback_query: CallbackQuery, db: Database
     # 3. Sufficient funds! Deduct balance immediately
     await db.update_user_balance(user_id, -price)
 
-    # 4. Create and update order to paid -> delivered instantly
+    # 4. Create order in paid status (pending delivery)
     order_id = await db.create_order(user_id=user_id, product_id=prod_id, status="paid", amount=price)
-    async with db._conn.cursor() as cursor:
-        await cursor.execute("UPDATE orders SET status = 'delivered' WHERE id = ?;", (order_id,))
-        await db._conn.commit()
 
-    # 5. Instantly Deliver product details inside the SPA message
+    # 5. Notify user in SPA screen
     breadcrumbs = format_breadcrumbs("home")
-    delivery_text = (
+    pending_text = (
         f"{breadcrumbs}\n\n"
-        f"<b>🎉 خرید شما با موفقیت از محل موجودی انجام شد!</b>\n\n"
+        f"<b>⏳ سفارش شما با موفقیت ثبت شد!</b>\n\n"
         f"📦 <b>شناسه سفارش:</b> #{order_id}\n"
         f"🛍️ <b>محصول خریداری شده:</b> {product_row['name']}\n"
         f"💰 <b>مبلغ کسر شده:</b> {format_currency(price)}\n\n"
-        f"🗝️ <b>لایسنس / اطلاعات دیجیتال محصول:</b>\n"
-        f"<code>{product_row['digital_data'] or 'تحویل دستی (به زودی ارسال می‌شود)'}</code>\n\n"
-        "از خرید شما متشکریم! جهت بازگشت به صفحه اصلی، روی دکمه زیر کلیک کنید."
+        "سفارش شما در صف بررسی مدیریت قرار گرفت. به محض تایید و تحویل کالا، مشخصات آن برای شما ارسال خواهد شد."
     )
 
     back_home_keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -189,15 +184,12 @@ async def handle_wallet_checkout_pay(callback_query: CallbackQuery, db: Database
 
     await edit_message_safely(
         event=callback_query,
-        text=delivery_text,
+        text=pending_text,
         reply_markup=back_home_keyboard
     )
-    await callback_query.answer("✅ خرید موفقیت‌آمیز بود!")
+    await callback_query.answer("✅ سفارش با موفقیت ثبت شد و در انتظار تایید مدیریت است.")
 
-    # 6. Referral Commission (10% cash-back to inviter)
-    await apply_referral_rewards(db, bot, user_row, product_row)
-
-    # 7. Send Log Report to admin (for audit trail)
+    # 6. Send Log Report to admin with decision buttons
     price_text = format_currency(price)
     await send_order_log_to_admin(
         bot=bot,
@@ -206,7 +198,7 @@ async def handle_wallet_checkout_pay(callback_query: CallbackQuery, db: Database
         username=username,
         product_name=product_row["name"],
         price_text=price_text,
-        method_text="پرداخت از محل کیف پول (ثبت فوری)"
+        method_text="پرداخت از کیف پول"
     )
 
 # --- Automated Online simulation ---
@@ -256,24 +248,18 @@ async def handle_simulated_success(callback_query: CallbackQuery, db: DatabaseMa
         await callback_query.answer("⚠️ محصول یافت نشد!", show_alert=True)
         return
 
-    # 1. Create order in paid status
+    # 1. Create order in paid status (pending delivery)
     order_id = await db.create_order(user_id=user_id, product_id=product_id, status="paid", amount=product["price"])
 
-    # 2. Update order to delivered
-    async with db._conn.cursor() as cursor:
-        await cursor.execute("UPDATE orders SET status = 'delivered' WHERE id = ?;", (order_id,))
-        await db._conn.commit()
-
-    # 3. Formulate and deliver digital_data beautifully in Farsi
+    # 2. Notify user in SPA screen
     breadcrumbs = format_breadcrumbs("home")
-    delivery_text = (
+    pending_text = (
         f"{breadcrumbs}\n\n"
-        f"<b>🎉 پرداخت شما با موفقیت تایید شد!</b>\n\n"
+        f"<b>⏳ پرداخت با موفقیت تایید شد!</b>\n\n"
         f"📦 <b>شناسه سفارش:</b> #{order_id}\n"
-        f"🛍️ <b>محصول خریداری شده:</b> {product['name']}\n\n"
-        f"🗝️ <b>لایسنس / اطلاعات دیجیتال محصول:</b>\n"
-        f"<code>{product['digital_data'] or 'تحویل دستی (به زودی ارسال می‌شود)'}</code>\n\n"
-        "از خرید شما متشکریم! جهت بازگشت به صفحه اصلی، روی دکمه زیر کلیک کنید."
+        f"🛍️ <b>محصول خریداری شده:</b> {product['name']}\n"
+        f"💰 <b>مبلغ تراکنش:</b> {format_currency(product['price'])}\n\n"
+        "سفارش شما با موفقیت پرداخت گردید و در انتظار تحویل توسط مدیریت است. به محض ارسال مشخصات، برای شما فرستاده خواهد شد."
     )
 
     back_home_keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -282,16 +268,12 @@ async def handle_simulated_success(callback_query: CallbackQuery, db: DatabaseMa
 
     await edit_message_safely(
         event=callback_query,
-        text=delivery_text,
+        text=pending_text,
         reply_markup=back_home_keyboard
     )
-    await callback_query.answer("✅ پرداخت موفقیت‌آمیز بود!")
+    await callback_query.answer("✅ پرداخت آنلاین شبیه‌سازی شد! در انتظار تایید مدیریت.")
 
-    # 4. Process Referral Reward
-    if user_row:
-        await apply_referral_rewards(db, bot, user_row, product)
-
-    # 5. Dispatch a report log to Admin
+    # 3. Send Log Report to admin with decision buttons
     price_text = format_currency(product["price"])
     await send_order_log_to_admin(
         bot=bot,
