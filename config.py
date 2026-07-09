@@ -27,3 +27,6 @@ except ValueError:
 
 CARD_NUMBER = os.getenv("CARD_NUMBER", "6037-9911-2233-4455")
 CARD_HOLDER = os.getenv("CARD_HOLDER", "امیر رضایی")
+
+# Backup Configuration (Phase 5)
+BACKUP_CHANNEL_ID = os.getenv("BACKUP_CHANNEL_ID", "-100123456789")

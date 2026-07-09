@@ -11,6 +11,9 @@ from handlers.base import router as base_router
 from handlers.store import router as store_router
 from handlers.payment import router as payment_router
 from handlers.admin import router as admin_router
+from handlers.wallet import router as wallet_router
+from handlers.referral import router as referral_router
+from utils.backup import run_backup_scheduler
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -43,11 +46,17 @@ async def main():
     dp.message.outer_middleware(ForceJoinMiddleware())
     dp.callback_query.outer_middleware(ForceJoinMiddleware())
 
-    # Register Routers
+    # Register Routers (Include wallet and referral routers cleanly)
     dp.include_router(base_router)
     dp.include_router(store_router)
     dp.include_router(payment_router)
     dp.include_router(admin_router)
+    dp.include_router(wallet_router)
+    dp.include_router(referral_router)
+
+    # Initialize Phase 5 Automated Background Cloud Backup Scheduler
+    # Starts as a lightweight, concurrent background task loop
+    backup_task = asyncio.create_task(run_backup_scheduler(bot, db))
 
     try:
         # Graceful startup logging
@@ -57,6 +66,9 @@ async def main():
     except Exception as e:
         logger.critical(f"Critical error during polling execution: {e}")
     finally:
+        # Cancel background tasks gracefully on exit
+        backup_task.cancel()
+
         # Graceful cleanup of resources on stop/interruption
         await bot.session.close()
         await db.close()

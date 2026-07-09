@@ -63,15 +63,12 @@ class DatabaseManager:
         """
         Creates all required SQLite database tables (users, categories, products, orders)
         if they do not exist already, with strict constraints.
+
+        In Phase 5, the 'orders' schema is updated to support nullable 'product_id' (to handle
+        wallet deposits) and a new 'amount' column to record payment sums.
         """
         if self._conn is None:
             raise RuntimeError("Database is not connected. Call connect() or use context manager.")
-
-        # Table definitions with specified structures
-        # 1. Users Table
-        # 2. Categories Table
-        # 3. Products Table
-        # 4. Orders Table
 
         queries = [
             # Categories Table
@@ -107,12 +104,13 @@ class DatabaseManager:
                 FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
             );
             """,
-            # Orders Table
+            # Orders Table (Phase 5: product_id is nullable, amount column added)
             """
             CREATE TABLE IF NOT EXISTS orders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
-                product_id INTEGER NOT NULL,
+                product_id INTEGER,
+                amount INTEGER,
                 status TEXT NOT NULL CHECK(status IN ('pending', 'paid', 'delivered', 'rejected')),
                 payment_receipt TEXT,
                 date TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -127,7 +125,7 @@ class DatabaseManager:
                 await cursor.execute(query)
             await self._conn.commit()
 
-        logger.info("Database tables initialized successfully.")
+        logger.info("Database tables initialized successfully (Phase 5 schema updated).")
 
     # --- Utility Methods ---
     def _generate_referral_code(self, length: int = 8) -> str:
@@ -148,7 +146,6 @@ class DatabaseManager:
         if self._conn is None:
             raise RuntimeError("Database is not connected.")
 
-        # We must generate a unique referral code and handle collision edge cases safely
         referral_code = self._generate_referral_code()
 
         async with self._conn.cursor() as cursor:
@@ -208,10 +205,18 @@ class DatabaseManager:
         ) as cursor:
             return await cursor.fetchall()
 
-    async def create_order(self, user_id: int, product_id: int, status: str = 'pending', payment_receipt: str = None) -> int:
+    async def create_order(
+        self,
+        user_id: int,
+        product_id: int | None,
+        status: str = 'pending',
+        payment_receipt: str = None,
+        amount: int | None = None
+    ) -> int:
         """
         Creates an order inside the orders table and returns the autoincremented order ID.
         Status constraint must be one of: 'pending', 'paid', 'delivered', 'rejected'.
+        Allows product_id to be None when registering a wallet deposit.
         """
         if self._conn is None:
             raise RuntimeError("Database is not connected.")
@@ -222,10 +227,80 @@ class DatabaseManager:
         async with self._conn.cursor() as cursor:
             await cursor.execute(
                 """
-                INSERT INTO orders (user_id, product_id, status, payment_receipt)
-                VALUES (?, ?, ?, ?);
+                INSERT INTO orders (user_id, product_id, amount, status, payment_receipt)
+                VALUES (?, ?, ?, ?, ?);
                 """,
-                (user_id, product_id, status, payment_receipt)
+                (user_id, product_id, amount, status, payment_receipt)
             )
             await self._conn.commit()
             return cursor.lastrowid
+
+    # --- Phase 5 Custom Database Operations ---
+
+    async def update_user_balance(self, user_id: int, amount_delta: int) -> bool:
+        """
+        Adds or subtracts balance to/from user's wallet.
+        """
+        if self._conn is None:
+            raise RuntimeError("Database is not connected.")
+
+        async with self._conn.cursor() as cursor:
+            await cursor.execute(
+                "UPDATE users SET wallet_balance = wallet_balance + ? WHERE user_id = ?;",
+                (amount_delta, user_id)
+            )
+            await self._conn.commit()
+            return cursor.rowcount > 0
+
+    async def get_user_by_referral_code(self, code: str) -> aiosqlite.Row | None:
+        """
+        Locates user data by custom unique referral_code string.
+        """
+        if self._conn is None:
+            raise RuntimeError("Database is not connected.")
+
+        async with self._conn.execute(
+            "SELECT user_id, username, wallet_balance, referral_code, invited_by, join_date FROM users WHERE referral_code = ?;",
+            (code,)
+        ) as cursor:
+            return await cursor.fetchone()
+
+    async def get_invited_users_count(self, user_id: int) -> int:
+        """
+        Counts the total number of sub-users invited by the specified user_id.
+        """
+        if self._conn is None:
+            raise RuntimeError("Database is not connected.")
+
+        async with self._conn.execute(
+            "SELECT COUNT(user_id) as count FROM users WHERE invited_by = ?;",
+            (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row["count"] if row else 0
+
+    async def get_total_user_count(self) -> int:
+        """
+        Counts the total registered users in the system. Used for backup metadata.
+        """
+        if self._conn is None:
+            raise RuntimeError("Database is not connected.")
+
+        async with self._conn.execute("SELECT COUNT(user_id) as count FROM users;") as cursor:
+            row = await cursor.fetchone()
+            return row["count"] if row else 0
+
+    async def get_total_user_orders_count(self, user_id: int) -> int:
+        """
+        Counts total orders completed or pending for a specific user.
+        Excludes wallet deposit order types where product_id is None.
+        """
+        if self._conn is None:
+            raise RuntimeError("Database is not connected.")
+
+        async with self._conn.execute(
+            "SELECT COUNT(id) as count FROM orders WHERE user_id = ? AND product_id IS NOT NULL;",
+            (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row["count"] if row else 0

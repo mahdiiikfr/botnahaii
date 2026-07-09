@@ -3,7 +3,7 @@ from aiogram import Router, Bot, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from database.db import DatabaseManager
 from keyboards.inline import MenuCallback
-from utils.ui import format_breadcrumbs
+from utils.ui import format_breadcrumbs, format_currency
 
 logger = logging.getLogger(__name__)
 
@@ -13,20 +13,20 @@ router = Router(name="admin_router")
 async def handle_admin_approval(callback_query: CallbackQuery, db: DatabaseManager, bot: Bot):
     """
     Handles admin's 'Approve Payment' callback query button click.
-    - Database: Updates status to 'paid' -> 'delivered'.
-    - Admin UI: Removes inline buttons, updates text dynamically to status approved ("وضعیت: ✅ تایید شده").
-    - Customer UI: Retrieves 'digital_data' (auto-delivery key) and sends dynamic beautiful report to client.
+    Checks order parameters:
+    1. If product_id IS NULL (None): It is a Wallet Deposit.
+       - Increment user's wallet balance by order's recorded amount.
+       - Send a successful wallet recharge notification in Farsi.
+    2. If product_id IS NOT NULL: It is a standard product purchase.
+       - Deliver digital product license keys directly to customer.
+       - Distribute 10% referral cashback commission if an inviter exists.
+    Updates Admin interface dynamically to prevent double-clicks.
     """
     order_id = int(callback_query.data.split(":")[1])
 
-    # Fetch order and product details
+    # Fetch order record
     async with db._conn.execute(
-        """
-        SELECT o.id, o.user_id, o.status, p.name, p.digital_data
-        FROM orders o
-        JOIN products p ON o.product_id = p.id
-        WHERE o.id = ?;
-        """, (order_id,)
+        "SELECT id, user_id, product_id, amount, status FROM orders WHERE id = ?;", (order_id,)
     ) as cursor:
         order = await cursor.fetchone()
 
@@ -35,60 +35,117 @@ async def handle_admin_approval(callback_query: CallbackQuery, db: DatabaseManag
         return
 
     if order["status"] in ("paid", "delivered"):
-        await callback_query.answer("⚠️ این سفارش قبلاً تایید و تحویل داده شده است!", show_alert=True)
-        # Update admin layout anyway to sync UI
+        await callback_query.answer("⚠️ این تراکنش قبلاً تأیید گردیده است!", show_alert=True)
         await _clean_admin_ui(callback_query, order_id, is_approved=True)
         return
 
-    # 1. Update order status in DB to delivered
-    async with db._conn.cursor() as cursor:
-        await cursor.execute("UPDATE orders SET status = 'delivered' WHERE id = ?;", (order_id,))
-        await db._conn.commit()
+    # Process based on order type (Deposit vs Product Purchase)
+    if order["product_id"] is None:
+        # --- A. WALLET DEPOSIT ORDER ---
+        deposit_amount = order["amount"] or 0
 
-    # 2. Update Admin Interface (remove buttons, mark as approved)
-    await _clean_admin_ui(callback_query, order_id, is_approved=True)
-    await callback_query.answer("✅ سفارش با موفقیت تایید و تحویل داده شد.")
+        # 1. Update order status in DB to delivered
+        async with db._conn.cursor() as cursor:
+            await cursor.execute("UPDATE orders SET status = 'delivered' WHERE id = ?;", (order_id,))
+            await db._conn.commit()
 
-    # 3. Notify and Deliver digital product to customer beautifully in Farsi
-    breadcrumbs = format_breadcrumbs("home")
-    delivery_text = (
-        f"{breadcrumbs}\n\n"
-        f"<b>🎉 پرداخت شما تایید شد! سفارش تحویل داده شد.</b>\n\n"
-        f"📦 <b>شناسه سفارش:</b> #{order_id}\n"
-        f"🛍️ <b>محصول خریداری شده:</b> {order['name']}\n\n"
-        f"🗝️ <b>لایسنس / اطلاعات دیجیتال محصول:</b>\n"
-        f"<code>{order['digital_data'] or 'تحویل دستی (به زودی ارسال می‌شود)'}</code>\n\n"
-        "از خرید شما صمیمانه سپاسگزاریم! جهت بازگشت به منوی اصلی روی دکمه زیر کلیک کنید."
-    )
+        # 2. Add amount to user's wallet balance
+        await db.update_user_balance(order["user_id"], deposit_amount)
 
-    back_home_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏠 بازگشت به صفحه اصلی", callback_data=MenuCallback(action="home").pack())]
-    ])
+        # 3. Update Admin Interface
+        await _clean_admin_ui(callback_query, order_id, is_approved=True)
+        await callback_query.answer("✅ افزایش اعتبار حساب کاربر با موفقیت تایید و اعمال شد.")
 
-    try:
-        # We can send a new message, or try to edit a previous message if we saved it.
-        # Since this is async/push delivery, sending a direct message is standard and highly reliable.
-        await bot.send_message(
-            chat_id=order["user_id"],
-            text=delivery_text,
-            reply_markup=back_home_keyboard,
-            parse_mode="HTML"
+        # 4. Notify Customer inside their Telegram Chat (Farsi, SPA style)
+        breadcrumbs = format_breadcrumbs("home")
+        recharge_text = (
+            f"{breadcrumbs}\n\n"
+            f"<b>🎉 اعتبار حساب شما افزایش یافت!</b>\n\n"
+            f"📦 <b>شناسه سفارش شارژ:</b> #{order_id}\n"
+            f"💰 <b>مبلغ افزوده شده:</b> {format_currency(deposit_amount)}\n\n"
+            "تراکنش واریزی شما تایید گردید و موجودی کیف پول شما با موفقیت به روزرسانی شد.\n"
+            "هم‌اکنون می‌توانید از محل موجودی اقدام به تهیه خدمات نمایید."
         )
-        logger.info(f"Delivered order digital keys #{order_id} directly to customer {order['user_id']}.")
-    except Exception as e:
-        logger.error(f"Failed to deliver key message to customer {order['user_id']}: {e}")
+
+        back_home_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🏠 بازگشت به صفحه اصلی", callback_data=MenuCallback(action="home").pack())]
+        ])
+
+        try:
+            await bot.send_message(
+                chat_id=order["user_id"],
+                text=recharge_text,
+                reply_markup=back_home_keyboard,
+                parse_mode="HTML"
+            )
+            logger.info(f"Delivered successful recharge notify to user {order['user_id']}.")
+        except Exception as e:
+            logger.error(f"Failed to notify customer {order['user_id']} of recharge approval: {e}")
+
+    else:
+        # --- B. STANDARD PRODUCT PURCHASE ---
+        # Fetch associated product digital license keys and details
+        async with db._conn.execute(
+            "SELECT name, digital_data, price FROM products WHERE id = ?;", (order["product_id"],)
+        ) as cursor:
+            product = await cursor.fetchone()
+
+        if not product:
+            await callback_query.answer("⚠️ محصول یافت نشد!", show_alert=True)
+            return
+
+        # 1. Update order status to delivered
+        async with db._conn.cursor() as cursor:
+            await cursor.execute("UPDATE orders SET status = 'delivered' WHERE id = ?;", (order_id,))
+            await db._conn.commit()
+
+        # 2. Update Admin Interface
+        await _clean_admin_ui(callback_query, order_id, is_approved=True)
+        await callback_query.answer("✅ سفارش با موفقیت تایید و تحویل داده شد.")
+
+        # 3. Deliver digital content cleanly to customer
+        breadcrumbs = format_breadcrumbs("home")
+        delivery_text = (
+            f"{breadcrumbs}\n\n"
+            f"<b>🎉 پرداخت شما تایید شد! سفارش تحویل داده شد.</b>\n\n"
+            f"📦 <b>شناسه سفارش:</b> #{order_id}\n"
+            f"🛍️ <b>محصول خریداری شده:</b> {product['name']}\n\n"
+            f"🗝️ <b>لایسنس / اطلاعات دیجیتال محصول:</b>\n"
+            f"<code>{product['digital_data'] or 'تحویل دستی (به زودی ارسال می‌شود)'}</code>\n\n"
+            "از خرید شما صمیمانه سپاسگزاریم! جهت بازگشت به منوی اصلی روی دکمه زیر کلیک کنید."
+        )
+
+        back_home_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🏠 بازگشت به صفحه اصلی", callback_data=MenuCallback(action="home").pack())]
+        ])
+
+        try:
+            await bot.send_message(
+                chat_id=order["user_id"],
+                text=delivery_text,
+                reply_markup=back_home_keyboard,
+                parse_mode="HTML"
+            )
+            logger.info(f"Delivered order keys #{order_id} directly to client {order['user_id']}.")
+        except Exception as e:
+            logger.error(f"Failed to deliver key to customer {order['user_id']}: {e}")
+
+        # 4. Trigger 10% Referral commission logic if applicable
+        user_row = await db.get_user(order["user_id"])
+        if user_row:
+            await _apply_referral_rewards(db, bot, user_row, product)
+
 
 @router.callback_query(F.data.startswith("admin_reject:"))
 async def handle_admin_rejection(callback_query: CallbackQuery, db: DatabaseManager, bot: Bot):
     """
     Handles admin's 'Reject Payment' callback query button click.
-    - Database: Updates status to 'rejected'.
-    - Admin UI: Removes inline buttons, updates text dynamically to status rejected ("وضعیت: ❌ رد شده").
-    - Customer UI: Sends rejection notification prompting customer to contact support.
+    Updates DB order status to 'rejected'.
+    Notifies customer that transaction was rejected.
+    Cleans admin UI to prevent double-clicks.
     """
     order_id = int(callback_query.data.split(":")[1])
 
-    # Fetch order and product details
     async with db._conn.execute(
         "SELECT id, user_id, status FROM orders WHERE id = ?;", (order_id,)
     ) as cursor:
@@ -103,23 +160,23 @@ async def handle_admin_rejection(callback_query: CallbackQuery, db: DatabaseMana
         await _clean_admin_ui(callback_query, order_id, is_approved=False)
         return
 
-    # 1. Update DB order status to rejected
+    # 1. Update order status to rejected in database
     async with db._conn.cursor() as cursor:
         await cursor.execute("UPDATE orders SET status = 'rejected' WHERE id = ?;", (order_id,))
         await db._conn.commit()
 
     # 2. Update Admin Interface
     await _clean_admin_ui(callback_query, order_id, is_approved=False)
-    await callback_query.answer("❌ سفارش رد شد.")
+    await callback_query.answer("❌ تراکنش با موفقیت رد شد.")
 
-    # 3. Notify Customer of rejection in Farsi
+    # 3. Notify Customer of rejection (Farsi)
     breadcrumbs = format_breadcrumbs("home")
     rejection_text = (
         f"{breadcrumbs}\n\n"
         f"<b>⚠️ پرداخت شما رد شد!</b>\n\n"
-        f"📦 <b>شناسه سفارش:</b> #{order_id}\n\n"
-        "متأسفانه واریز رسید ثبت شده شما توسط مدیریت تایید نگردید.\n"
-        "خواهشمند است اطلاعات پرداخت خود را مجدداً بررسی کرده یا جهت پیگیری بیشتر با پشتیبانی در ارتباط باشید.\n\n"
+        f"📦 <b>شناسه تراکنش:</b> #{order_id}\n\n"
+        "متأسفانه واریز رسید ثبت شده شما مورد تأیید قرار نگرفت.\n"
+        "خواهشمند است اطلاعات تراکنش خود را مجدداً بررسی کرده یا در صورت لزوم با بخش پشتیبانی در ارتباط باشید.\n\n"
         "جهت بازگشت به منوی اصلی روی دکمه زیر کلیک کنید:"
     )
 
@@ -137,6 +194,7 @@ async def handle_admin_rejection(callback_query: CallbackQuery, db: DatabaseMana
         logger.info(f"Dispatched rejection notification for order #{order_id} to user {order['user_id']}.")
     except Exception as e:
         logger.error(f"Failed to notify customer {order['user_id']} of rejection: {e}")
+
 
 async def _clean_admin_ui(callback_query: CallbackQuery, order_id: int, is_approved: bool):
     """
@@ -163,3 +221,42 @@ async def _clean_admin_ui(callback_query: CallbackQuery, order_id: int, is_appro
             )
     except Exception as e:
         logger.error(f"Failed to clean admin interface for order #{order_id}: {e}")
+
+
+async def _apply_referral_rewards(db: DatabaseManager, bot: Bot, user_row: dict, product: dict):
+    """
+    Referral Cashback Reward logic:
+    Finds inviter, credits 10% of standard product purchases to inviter's wallet,
+    and dispatches a direct Farsi notification with RTL emojis.
+    """
+    invited_by = user_row["invited_by"]
+    if not invited_by:
+        return
+
+    commission = int(product["price"] * 0.10)
+    if commission <= 0:
+        return
+
+    # Credit inviter's wallet balance
+    success = await db.update_user_balance(invited_by, commission)
+    if not success:
+        return
+
+    formatted_commission = format_currency(commission)
+    customer_name = f"@{user_row['username']}" if user_row['username'] else "یکی از زیرمجموعه‌های شما"
+
+    notification_text = (
+        "<b>🎉 تبریک پورسانت جدید!</b>\n\n"
+        f"یکی از زیرمجموعه‌های شما ({customer_name}) خرید موفقی به مبلغ {format_currency(product['price'])} انجام داد. 😍\n\n"
+        f"💰 مبلغ <b>{formatted_commission}</b> (۱۰٪ پورسانت) به صورت خودکار به کیف پول شما افزوده شد!"
+    )
+
+    try:
+        await bot.send_message(
+            chat_id=invited_by,
+            text=notification_text,
+            parse_mode="HTML"
+        )
+        logger.info(f"Successfully credited {commission} referral reward to inviter {invited_by}.")
+    except Exception as e:
+        logger.error(f"Failed to deliver referral commission direct message to {invited_by}: {e}")

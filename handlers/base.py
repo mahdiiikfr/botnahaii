@@ -26,19 +26,21 @@ async def cmd_start(message: Message, state: FSMContext, db: DatabaseManager):
     user_id = message.from_user.id
     username = message.from_user.username
 
-    # Check for referral payload in start command (e.g., /start <referrer_id>)
+    # Check for referral payload in start command (e.g., /start <referral_code>)
     args = message.text.split()
     invited_by = None
+
     if len(args) > 1:
-        try:
-            potential_inviter = int(args[1])
+        ref_payload = args[1].strip()
+        # Look up inviter by referral code
+        inviter_row = await db.get_user_by_referral_code(ref_payload)
+        if inviter_row:
+            potential_inviter = inviter_row["user_id"]
             # Prevent self-referral
             if potential_inviter != user_id:
                 invited_by = potential_inviter
-        except ValueError:
-            pass
 
-    # Register user in DB
+    # Register user in DB (only inserts if user doesn't exist, preventing invite overwriting)
     await db.add_user(user_id=user_id, username=username, invited_by=invited_by)
 
     breadcrumbs = format_breadcrumbs("home")
